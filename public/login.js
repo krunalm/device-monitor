@@ -7,7 +7,15 @@ async function unlock(link) {
   const result = await res.json();
   if (!res.ok || !/^[A-Za-z0-9_-]{43}$/.test(result.token || '')) throw new Error('This invitation expired or was already used. Copy a new one from the hub.');
   sessionStorage.setItem('dm.session', result.token);
-  location.replace('/');
+  location.replace(landing());
+}
+// Same rule as prefersLite() in session.js, in syntax old tablet browsers can read: low-memory
+// devices (about 1 GB) open the lite dashboard unless this device chose a view.
+function landing() {
+  try {
+    var view = localStorage.getItem('dm.view');
+    return view === 'lite' || (view == null && navigator.deviceMemory <= 1) ? '/lite' : '/';
+  } catch (e) { return '/'; }
 }
 function submit(link) { return unlock(link).catch(e => { error.textContent = e.message; }); }
 form.addEventListener('submit', e => { e.preventDefault(); submit(input.value.trim()); input.value = ''; });

@@ -19,7 +19,7 @@ const num = (v, min = 0, max = 1e18) => {
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : null;
 };
 const list = (v, max) => (Array.isArray(v) ? v.slice(0, max) : []);
-const PLATFORMS = new Set(['windows', 'linux', 'macos']);
+const PLATFORMS = new Set(['windows', 'linux', 'macos', 'android']);
 const ACTIONS = new Set(['sleep', 'restart', 'shutdown']);
 const MAC_RE = /^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i;
 
@@ -35,7 +35,7 @@ function normalizeReport(b) {
     platform: PLATFORMS.has(b.platform) ? b.platform : 'unknown',
     os: str(b.os, 120),
     uptime: num(b.uptime, 0, 1e10),
-    formFactor: b.formFactor === 'laptop' || b.formFactor === 'desktop' ? b.formFactor : null,
+    formFactor: ['laptop', 'desktop', 'mobile'].includes(b.formFactor) ? b.formFactor : null,   // mobile: phones and tablets
     power: isObj(b.power) ? { cpu: num(b.power.cpu, 0, 5000) } : null,
     features: list(b.features, 8).filter(f => f === 'procs' || f === 'actions'),
     actions: list(b.actions, 8).filter(a => ACTIONS.has(a)),
@@ -51,8 +51,11 @@ function normalizeReport(b) {
       clockMHz: num(cpu.clockMHz, 0, 1e5),
       temp: num(cpu.temp, -60, 250),
       tempSource: cpu.tempSource === 'acpi' ? 'acpi' : null,
+      usageSource: cpu.usageSource === 'freq' ? 'freq' : null,   // freq: estimated from clock speeds (Android hides real load from apps)
     },
     memory: { total: num(mem.total), used: num(mem.used) },
+    battery: isObj(b.battery) && num(b.battery.percent, 0, 100) != null
+      ? { percent: num(b.battery.percent, 0, 100), charging: typeof b.battery.charging === 'boolean' ? b.battery.charging : null } : null,
     gpus: list(b.gpus, 32).filter(isObj).map(g => ({
       name: str(g.name, 120), vendor: str(g.vendor, 20),
       usage: num(g.usage, 0, 100), temp: num(g.temp, -60, 250),

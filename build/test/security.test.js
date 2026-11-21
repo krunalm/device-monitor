@@ -441,7 +441,7 @@ test('headless operator bootstrap stays inside a private, instance-bound mailbox
 test('shell report dispatch keeps credentials outside argv and report bytes on all paths',()=>{
   const cp=require('node:child_process');
   const bash=process.platform==='win32'?path.join(process.env.ProgramFiles,'Git/bin/bash.exe'):'bash';
-  for(const name of ['agent.sh','agent-macos.sh']){
+  for(const name of ['agent.sh','agent-macos.sh','agent-android.sh']){
     const source=fs.readFileSync(path.join(root,'agent',name),'utf8').replace(/\r/g,'');
     const start=source.lastIndexOf('  if [ "$DM_REPORT_PIPE" = 1 ]; then');
     const dispatch=source.slice(start,source.indexOf('\n  fi',start)+5);
@@ -530,4 +530,88 @@ test('updater startup tolerates a locked prior installer and source builds offer
   m.signature=crypto.sign(null,Buffer.from(signedPayload(m)),keys.privateKey).toString('base64');
   const updater=new Updater({app:{getVersion:()=> '1.0.0'},hubUrl:()=> 'https://unused.invalid',dir,publicKeyPem:keys.publicKey.export({type:'spki',format:'pem'}),canInstall:()=>false,manualDownload:()=>false,log:()=>{}});
   assert.equal((await updater.check()).state,'source-release');assert.equal(updater.readyFile,undefined);
+});
+// A fake Android /proc and /sys. `locked` is Android 8-10+, which closes /proc/stat, the network
+// counters and the battery files to apps.
+function androidRoot(dir,locked){
+  const root=path.join(dir,locked?'locked':'open');
+  const put=(file,text)=>{const f=path.join(root,file);fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,text+'\n');};
+  for(let i=0;i<4;i++){
+    const cpu='sys/devices/system/cpu/cpu'+i+'/';
+    put(cpu+'cpufreq/cpuinfo_min_freq','600000');put(cpu+'cpufreq/cpuinfo_max_freq','1300000');put(cpu+'cpufreq/scaling_cur_freq','950000');
+  }
+  put('sys/devices/system/cpu/cpu3/online','0');
+  put('proc/meminfo','MemTotal:         963284 kB\nMemFree:           41212 kB\nMemAvailable:     385313 kB\nBuffers:           12000 kB\nCached:           300000 kB\nSwapCached:            0 kB');
+  put('proc/cpuinfo','processor\t: 0\nHardware\t: MT8167B');
+  if(locked)return root;
+  put('proc/stat','cpu  1000 0 500 8000 100 0 0 0 0 0\ncpu0 400 0 200 2300 50 0 0 0 0 0\ncpu1 300 0 200 2700 25 0 0 0 0 0\ncpu2 300 0 100 3000 25 0 0 0 0 0\nintr 1');
+  put('proc/net/dev','Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo:  999999     100    0    0    0     0          0         0   999999     100    0    0    0     0       0          0\n wlan0:1000000    2000    0    0    0     0          0         0   500000    1500    0    0    0     0       0          0');
+  put('proc/uptime','12345.67 40000.00');
+  put('sys/class/thermal/thermal_zone0/type','mtktscpu');put('sys/class/thermal/thermal_zone0/temp','47300');
+  put('sys/class/thermal/thermal_zone1/type','battery');put('sys/class/thermal/thermal_zone1/temp','90000');
+  put('sys/class/thermal/thermal_zone2/type','cpu-1');put('sys/class/thermal/thermal_zone2/temp','52');
+  put('sys/class/power_supply/battery/capacity','87');put('sys/class/power_supply/battery/status','Charging');put('sys/class/power_supply/battery/temp','291');
+  return root;
+}
+test('Android collector reads open and locked-down devices, and the hub sizes them as tablets',{skip:process.platform!=='linux'&&'needs Linux /proc and bash 4+'},async t=>{
+  const cp=require('node:child_process');
+  const dir=temp(t),bin=path.join(dir,'bin'),home=path.join(dir,'home');
+  fs.mkdirSync(bin);fs.mkdirSync(home);
+  const tool=(name,body)=>fs.writeFileSync(path.join(bin,name),'#!/bin/sh\n'+body+'\n',{mode:0o755});
+  tool('getprop',"case \"$1\" in ro.product.manufacturer) echo LENOVO;; ro.product.model) echo 'Lenovo TB-7104F';; ro.build.version.release) echo 8.1.0;; esac");
+  // Between two samples the counters move: 900 ticks in all, 600 of them idle.
+  tool('sleep',"[ -f \"$DM_SYSROOT/proc/stat\" ] && printf 'cpu  1200 0 600 8600 100 0 0 0 0 0\\ncpu0 500 0 250 2450 50 0 0 0 0 0\\ncpu1 350 0 225 2925 25 0 0 0 0 0\\ncpu2 350 0 125 3225 25 0 0 0 0 0\\nintr 1\\n' > \"$DM_SYSROOT/proc/stat\"\n[ -f \"$DM_SYSROOT/proc/net/dev\" ] && sed -i 's/wlan0:1000000/wlan0:1300000/' \"$DM_SYSROOT/proc/net/dev\"\n/bin/sleep 0.2");
+  tool('termux-battery-status',"echo '{ \"percentage\": 64, \"status\": \"DISCHARGING\", \"temperature\": 31.200000762939453 }'");
+  const children=[];t.after(()=>children.forEach(c=>c.kill()));
+  const collect=root=>new Promise((resolve,reject)=>{
+    const child=cp.spawn('bash',[path.join(__dirname,'../../agent/agent-android.sh')],{stdio:['ignore','pipe','pipe'],
+      env:{PATH:bin+':'+process.env.PATH,HOME:home,DM_SYSROOT:root,DM_REPORT_PIPE:'1'}});
+    children.push(child);
+    let out='',err='';child.stderr.on('data',d=>err+=d);
+    child.stdout.on('data',d=>{out+=d;const end=out.indexOf('\n');if(end<0)return;child.kill();try{resolve({report:JSON.parse(out.slice(0,end)),err});}catch(e){reject(e);}});
+    child.on('error',reject);child.on('close',()=>reject(new Error('No report: '+err)));
+  });
+  const open=await collect(androidRoot(dir,false));
+  assert.equal(open.err,'');
+  assert.deepEqual([open.report.hostname,open.report.os,open.report.platform,open.report.formFactor,open.report.uptime],['Lenovo TB-7104F','Android 8.1.0','android','mobile',12345]);
+  assert.deepEqual(open.report.cpu,{name:'MT8167B',threads:4,clockMHz:950,temp:52,usage:33.3,cores:[50,25,25,0]});
+  assert.deepEqual(open.report.memory,{total:963284*1024,used:(963284-385313)*1024});
+  assert.ok(open.report.net.rx>0);assert.equal(open.report.net.tx,0);
+  assert.deepEqual(open.report.battery,{percent:87,charging:true});assert.deepEqual(open.report.temps,[{name:'Battery',value:29.1}]);
+  const locked=await collect(androidRoot(dir,true));
+  assert.equal(locked.err,'');
+  assert.deepEqual(locked.report.cpu,{name:'MT8167B',threads:4,clockMHz:950,temp:null,usage:37.5,usageSource:'freq',cores:[50,50,50,0]});
+  assert.equal(locked.report.net,undefined);assert.ok(locked.report.uptime>0);
+  assert.deepEqual(locked.report.battery,{percent:64,charging:false});assert.deepEqual(locked.report.temps,[{name:'Battery',value:31.2}]);
+  const {h,call}=await fixture(t);
+  h.seedReport({...locked.report,id:'tablet'});
+  const [device]=await call('/api/devices',{key:h.localKey}).then(r=>r.json());
+  assert.deepEqual([device.platform,device.latest.formFactor,device.latest.cpu.usageSource,device.latest.battery.percent],['android','mobile','freq',64]);
+  assert.ok(device.latest.powerEst.watts>1&&device.latest.powerEst.watts<10);
+});
+test('lite dashboard data needs a dashboard session, and the Android collector is pinned like the others',async t=>{
+  const {call,invite,h,base}=await fixture(t);
+  const page=await call('/lite');
+  assert.equal(page.status,200);assert.match(page.headers.get('content-security-policy'),/script-src 'nonce-/);
+  const installer=await call('/install.sh',{key:await invite('agent'),remote:true}).then(r=>r.text());
+  const agentKey=/TOKEN='([A-Za-z0-9_-]{43})'/.exec(installer)[1];
+  const served=await call('/agent-android.sh');assert.equal(served.status,200);
+  const digest=crypto.createHash('sha256').update(Buffer.from(await served.arrayBuffer())).digest('hex');
+  assert.ok(installer.includes("SHA_AGENT_ANDROID='"+digest+"'"));assert.ok(installer.includes('"$SHA_AGENT_ANDROID"'));
+  assert.equal((await call('/api/summary')).status,401);
+  assert.equal((await call('/api/summary',{key:agentKey})).status,401);
+  h.seedReport({id:'tablet',hostname:'Tablet',platform:'android',formFactor:'mobile',cpu:{usage:37.52,usageSource:'freq',threads:4},memory:{total:1e9,used:6e8},battery:{percent:64,charging:false,extra:1}});
+  h.seedReport({id:'pc',hostname:'PC',platform:'linux',cpu:{usage:5},gpus:[{name:'GPU',usage:91,temp:70}],battery:{percent:'full'}});
+  const {token}=await call('/api/session',{method:'POST',key:await invite('browser',null,base)}).then(r=>r.json());
+  const {devices}=await call('/api/summary',{key:token}).then(r=>r.json());
+  const tablet=devices.find(d=>d.id==='tablet'),pc=devices.find(d=>d.id==='pc');
+  assert.deepEqual([tablet.name,tablet.os,tablet.online,tablet.cpu,tablet.cpuEstimated,tablet.gpu,tablet.memTotal],['Tablet','android',true,37.5,true,undefined,1e9]);
+  assert.deepEqual(tablet.battery,{percent:64,charging:false});assert.ok(tablet.watts<10);assert.equal(tablet.history,undefined);
+  assert.deepEqual([pc.gpu,pc.gpuTemp,pc.battery,pc.cpuEstimated],[91,70,undefined,undefined]);
+  // The lite page must run on old tablet browsers: its script stays ES5.
+  const lite=/<script>([\s\S]*)<\/script>/.exec(fs.readFileSync(path.join(root,'public/lite.html'),'utf8'))[1];
+  new vm.Script(lite);assert.doesNotMatch(lite,/=>|`|\b(?:const|let|class|async|await)\b|\?\.|\?\?/);
+  const session=fs.readFileSync(path.join(root,'public/session.js'),'utf8');
+  const prefers=(view,deviceMemory,protocol='https:')=>vm.runInNewContext(session+';prefersLite()',{location:{protocol},navigator:{deviceMemory},localStorage:{getItem:()=>view}});
+  assert.deepEqual([prefers(null,1),prefers(null,8),prefers(null,undefined),prefers('full',1),prefers('lite',8),prefers('lite',8,'dmapp:')],[true,false,false,false,true,false]);
 });

@@ -161,7 +161,7 @@
   .cmd code { flex: 1; background: #0b0b0b; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font: 12px/1.5 Consolas, ui-monospace, monospace; word-break: break-all; user-select: all; }
   .hint { font-size: 12px; color: var(--text-muted); }
   select { background: var(--surface-2); color: var(--text-primary); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font: inherit; }
-  .tabs { display: flex; gap: 6px; margin: 14px 0 10px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 10px; }
   .dlg-foot { display: flex; justify-content: flex-end; margin-top: 18px; }
   .menu { position: absolute; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 4px; z-index: 10; min-width: 150px; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
   .menu button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 7px 10px; border-radius: 6px; }
@@ -341,7 +341,7 @@
   </label>
   <label class="hint">Enrollment <select id="enrollDevice"><option value="">New device</option></select></label>
   <button class="btn" id="enableHttps" hidden>Enable Tailscale HTTPS on this hub</button>
-  <div class="tabs seg" id="osTabs"><button data-os="win" class="on">Windows command</button><button data-os="app">Desktop app (Windows / Mac)</button><button data-os="linux">Mac / Linux command</button></div>
+  <div class="tabs seg" id="osTabs"><button data-os="win" class="on">Windows command</button><button data-os="app">Desktop app (Windows / Mac)</button><button data-os="linux">Mac / Linux command</button><button data-os="android">Android</button></div>
   <div class="cmd" id="cmdRow"><code id="cmd"></code><button class="btn" id="copyBtn">Copy</button></div>
   <div class="hint" id="cmdHint"></div>
   <div class="pair" id="pairRow" hidden><span class="hint">Desktop invitation</span><code id="pairCode" style="overflow-wrap:anywhere;user-select:all"></code> <button class="btn" id="copyPair">Copy</button><span class="hint" id="pairHint"></span></div>
@@ -354,6 +354,7 @@
   <h3>Settings</h3>
   <div class="set-section">
     <div class="set-row"><div class="set-text"><div class="set-k">Temperature unit</div></div><div class="seg" id="setUnit"><button data-u="C">°C</button><button data-u="F">°F</button></div></div>
+    <div class="set-row" id="setLiteRow" hidden><div class="set-text"><div class="set-k">Lite dashboard</div><div class="set-v hint">A simpler page without charts, for slow tablets and phones. This device opens it from now on.</div></div><button class="btn" id="setLite">Switch</button></div>
   </div>
   <div class="set-section app-only">
     <div class="set-row"><div class="set-text"><div class="set-k">This computer</div><div class="set-v" id="setRole"></div></div><button class="btn" id="setChange">Change setup…</button></div>
@@ -382,6 +383,8 @@
 <script>
 if (!nativeDashboard && !sessionStorage.getItem('dm.session')) {
   location.replace('/unlock');
+} else if (prefersLite()) {
+  location.replace('/lite');
 } else {
 const $ = (s, el = document) => el.querySelector(s);
 // Preferences live in browser storage; the desktop app keeps a copy too, so they survive the app
@@ -545,6 +548,7 @@ function updateCard(id) {
   if (sys) stats.push(stat('Disk ' + esc(sys.name), `${fmtBytes(sys.used, 0)} / ${fmtBytes(sys.total, 0)}`, sys.used / sys.total * 100));
   if (L.net) stats.push(stat('Network', `↓ ${fmtRate(L.net.rx)} &nbsp;↑ ${fmtRate(L.net.tx)}`));
   if (L.diskIO) stats.push(stat('Disk I/O', `R ${fmtRate(L.diskIO.read)} &nbsp;W ${fmtRate(L.diskIO.write)}`));
+  if (L.battery && !L.offline) stats.push(stat('Battery', fmtPct(L.battery.percent) + (L.battery.charging ? ' · charging' : ''), L.battery.percent, L.battery.percent < 20 && !L.battery.charging ? 'var(--warning)' : 'var(--good)'));
   refs.stats.innerHTML = stats.join('');
 
   if (refs.details.open) refs.detail.innerHTML = detailHtml(L);
@@ -601,6 +605,9 @@ function detailHtml(L) {
   }
   if (!L.offline && !L.temps?.length && L.platform === 'windows' && L.cpu?.temp == null) {
     h += `<div class="section hint">CPU temperature, fans and motherboard sensors appear here if <b>LibreHardwareMonitor</b> is running on this PC.</div>`;
+  }
+  if (!L.offline && L.cpu?.usageSource === 'freq') {
+    h += `<div class="section hint">CPU load is estimated from how fast each core is clocked: this Android version doesn't let apps read the real figure.</div>`;
   }
   return h || '<div class="section hint">No data yet.</div>';
 }
@@ -910,6 +917,7 @@ async function updateCmd() {
       $('#cmd').textContent = "irm -UseBasicParsing -MaximumRedirection 0 -Headers @{Authorization='Bearer " + code + "'} '" + dest + "/install.ps1' | iex";
     } else {
       $('#cmd').textContent = "curl -q --proto '=https' -fsS -H @- '" + dest + "/install.sh' <<'DM_HEADER' | bash\nAuthorization: Bearer " + code + "\nDM_HEADER";
+      if (osTab === 'android') $('#cmdHint').textContent = 'On the tablet or phone, install Termux, run "pkg install curl", then paste this command there within ten minutes. No root needed. The device must reach this hub address (the same Tailscale network or LAN).';
     }
   } catch (e) { if (request === invitationRequest) $('#cmdHint').textContent = e.message; }
 }
@@ -1276,6 +1284,8 @@ async function openSettings() {
 }
 let settingsMode = null;
 const signOut = $('#signOut'), revokeSessions = $('#revokeSessions');
+$('#setLiteRow').hidden = nativeDashboard;
+$('#setLite').onclick = () => { localStorage.setItem('dm.view', 'lite'); location.assign('/lite'); };
 if (signOut) { signOut.hidden = nativeDashboard; signOut.onclick = async () => { await hubFetch('/api/logout',{method:'POST'}); sessionStorage.removeItem('dm.session'); location.replace('/unlock'); }; }
 if (revokeSessions && nativeDashboard) appApi?.getSettings().then(s => { revokeSessions.hidden = s.mode !== 'host'; });
 if (revokeSessions) revokeSessions.onclick = async () => { if (confirm('Revoke all browser sessions and pending invitations?')) await hubFetch('/api/sessions/revoke',{method:'POST'}); };

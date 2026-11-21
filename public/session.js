@@ -1,6 +1,14 @@
 // Web sessions live in one tab and origin (including port). Native dashboards
 // use a bundled origin; their main process authenticates data requests.
 const nativeDashboard = location.protocol === 'dmapp:';
+// Browsers on low-memory devices (about 1 GB) get the lite dashboard unless this device chose a view.
+function prefersLite() {
+  if (nativeDashboard) return false;
+  try {
+    const view = localStorage.getItem('dm.view');
+    return view === 'lite' || (view == null && navigator.deviceMemory <= 1);
+  } catch { return false; }
+}
 function hubFetch(resource, options = {}) {
   const url = new URL(resource, location.href);
   if (url.protocol !== location.protocol || url.host !== location.host || !url.pathname.startsWith('/api/')) throw new Error('Invalid dashboard request');

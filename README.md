@@ -88,6 +88,30 @@ The app isn't notarized, so the first time you open it, **right-click → Open**
 
 - **Another Windows PC**: install the app and choose **Connect**. If you don't want the full app there, use the installer command from the dashboard's **+ Add device** dialog. It installs a small background agent with no admin rights needed.
 - **Mac / Linux without the app**: run the `curl … | bash` command from **+ Add device**. It installs a background agent (a LaunchAgent on macOS, a systemd user service on Linux) with no sudo needed.
+- **Android tablet or phone**: run the command from **+ Add device → Android** in [Termux](https://termux.dev). No root needed. See [Android](#android).
+
+## Android
+
+A tablet or phone can show the dashboard, report itself as a device, or both. Both parts are built for low-end hardware (about 1 GB of memory and a slow CPU).
+
+**Showing the dashboard.** Open a dashboard link in the tablet's browser (see [Viewing](#viewing-from-a-phone-tablet-or-browser)). A device with about 1 GB of memory gets the **lite dashboard** (`/lite`) automatically. It has no charts or animation and makes one small request every 5, 15 or 60 seconds. **Keep screen on** stops a wall-mounted tablet from sleeping, where the browser supports it. To switch a device between the two, use **Full dashboard** on the lite page or **Settings → Lite dashboard** on the full one. A browser session lasts eight hours, so an always-on display needs a fresh link after that.
+
+**Reporting the tablet itself.**
+
+1. Install Termux (from F-Droid) and run `pkg install curl`.
+2. On the hub, open **+ → Android**, copy the command and paste it into Termux within ten minutes.
+3. Leave Termux running in the background. To start the collector after a reboot, install the Termux:Boot app and open it once.
+
+The collector is one small shell script: about 5 MB of memory and one report every 5 seconds. What it can show depends on what the Android version lets apps read:
+
+- **CPU load.** Android 8 and later hide it from apps, so it is estimated from how fast each core is clocked (marked `~` on the lite dashboard and noted under Details).
+- **Network and disk rates, CPU temperature.** Shown where the device exposes them, and left out otherwise.
+- **Battery.** Read from the system where allowed. Otherwise install the Termux:API app and run `pkg install termux-api`.
+- **Power.** Nothing is measured. A phone or tablet is counted as roughly 3 W idle and 6 to 9 W busy.
+
+Android pauses the collector while the tablet sleeps, so a sleeping tablet shows as offline. To keep it reporting with the screen off, set `KEEP_AWAKE=1` in `~/.local/share/device-monitor/settings` (this uses more battery). `INTERVAL` in the same file sets the seconds between reports.
+
+The tablet has to reach the hub's HTTPS address: run the Tailscale app on the same tailnet, or use your LAN address. Tailscale HTTPS certificates work as they are. With your own CA, add it to Termux's certificate bundle.
 
 ## Viewing from a phone, tablet or browser
 
@@ -156,10 +180,11 @@ npm run hub        # headless hub only (e.g. on a home server), dashboard at :77
 | `updater.js`, `build/release.js` | Signed self-updates from the hub; the release command |
 | `history.js` | Metric history (raw last hour + 1-minute averages for 30 days, on disk) |
 | `power.js` | Power estimates (watts at the wall) used for electricity use and cost |
-| `agent-runner.js`, `agent/` | Metric agents (Windows PowerShell, macOS and Linux bash) and their one-line installers |
+| `agent-runner.js`, `agent/` | Metric agents (Windows PowerShell; macOS, Linux and Android/Termux bash) and their one-line installers |
 | `build/screenshots.js` | Regenerates the README screenshots in `docs/screenshots/` from a demo hub |
 | `build/test/` | Test fixtures: seeded test hub, macOS command mocks for the Mac agent |
 | `public/index.html` | Dashboard UI |
+| `public/lite.html` | Lite dashboard for low-end tablets and phones |
 | `build/make-icon.js` | Generates the app and tray icons |
 
 App data is stored in `%APPDATA%\Device Monitor`: `settings.json`, plus `hub\` with the device list and access records. The installer isn't code-signed, so Windows SmartScreen may show "Windows protected your PC". Click **More info → Run anyway**.

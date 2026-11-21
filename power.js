@@ -12,6 +12,8 @@
 function profile(hw = {}) {
   const laptop = hw.formFactor === 'laptop';
   const threads = Math.max(1, Math.min(512, hw.threads || 8));
+  // Phones and tablets: a few watts in all, most of it the screen. Nothing on them is measured.
+  if (hw.formFactor === 'mobile') return { laptop: false, mobile: true, cpuIdle: 0.3, cpuMax: Math.min(6, 1.5 + threads * 0.5), rest: 2, efficiency: 0.85 };
   return {
     laptop,
     cpuIdle: laptop ? 3 : 12,

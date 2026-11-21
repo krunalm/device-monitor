@@ -128,6 +128,21 @@ function saveRegistry() {
   saveTimer = setTimeout(() => { saveTimer = null; writeJson(DEVICES_FILE, registry); }, 1000);
 }
 
+// The few numbers the lite dashboard shows, without the report details or chart history.
+function summaryView(id) {
+  const reg = registry[id];
+  const online = Date.now() - (reg.lastSeen || 0) < OFFLINE_MS;
+  const out = { id, name: reg.name, os: reg.os || reg.platform || null, order: reg.order ?? null, online, lastSeen: reg.lastSeen || null };
+  const b = online && live[id]?.latest;
+  if (!b) return out;
+  const g = b.gpus?.[0];
+  const r1 = v => v == null ? null : Math.round(v * 10) / 10;
+  return { ...out, uptime: b.uptime, cpu: r1(b.cpu?.usage), cpuTemp: r1(b.cpu?.temp), cpuEstimated: b.cpu?.usageSource === 'freq' || undefined,
+    gpu: g ? r1(g.usage) : undefined, gpuTemp: g ? r1(g.temp) : undefined,
+    memUsed: b.memory?.used ?? null, memTotal: b.memory?.total ?? null,
+    rx: b.net?.rx, tx: b.net?.tx, watts: b.powerEst?.watts, battery: b.battery || undefined };
+}
+
 function deviceView(id) {
   const reg = registry[id];
   const l = live[id] || {};
@@ -480,6 +495,7 @@ const handler = async (req, res) => {
     if (req.method === 'GET' && (p === '/' || p === '/index.html')) return sendHtml(res, 'index.html');
     if (req.method === 'GET' && p === '/pair') return send(res, 200, 'Paste this complete invitation into Device Monitor → Connect on the computer you want to enroll.', 'text/plain; charset=utf-8');
     if (req.method === 'GET' && p === '/unlock') return sendHtml(res, 'locked.html');
+    if (req.method === 'GET' && p === '/lite') return sendHtml(res, 'lite.html');   // low-end tablets and phones
     if (req.method === 'POST' && p === '/api/desktop/tls-proof') {
       if (!routeOrigin.startsWith('https:')) return send(res, 403, {error:'HTTPS required'});
       const body = await readBody(req, 1024);
@@ -567,10 +583,10 @@ const handler = async (req, res) => {
       const sha256 = f => crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT, 'agent', f))).digest('hex');
       return send(res, 200, template(path.basename(p), {
         HUB: routeOrigin, TOKEN: member.agent, DEVICE_ID: member.id,
-        SHA_AGENT: sha256('agent.sh'), SHA_AGENT_MAC: sha256('agent-macos.sh'), SHA_AGENT_PS1: sha256('agent.ps1'),
+        SHA_AGENT: sha256('agent.sh'), SHA_AGENT_MAC: sha256('agent-macos.sh'), SHA_AGENT_ANDROID: sha256('agent-android.sh'), SHA_AGENT_PS1: sha256('agent.ps1'),
       }), 'text/plain; charset=utf-8');
     }
-    if (req.method === 'GET' && (p === '/agent.ps1' || p === '/agent.sh' || p === '/agent-macos.sh' || p === '/uninstall.ps1' || p === '/uninstall.sh')) {
+    if (req.method === 'GET' && (p === '/agent.ps1' || p === '/agent.sh' || p === '/agent-macos.sh' || p === '/agent-android.sh' || p === '/uninstall.ps1' || p === '/uninstall.sh')) {
       return send(res, 200, fs.readFileSync(path.join(ROOT, 'agent', path.basename(p))), 'text/plain; charset=utf-8');
     }
 
@@ -583,6 +599,7 @@ const handler = async (req, res) => {
     if (req.method === 'GET' && p === '/api/devices') {
       return send(res, 200, Object.keys(registry).map(deviceView));
     }
+    if (req.method === 'GET' && p === '/api/summary') return send(res, 200, { devices: Object.keys(registry).map(summaryView) });
     if (req.method === 'GET' && p === '/api/stream') return await streamDashboard(req, res);
     if (req.method === 'GET' && p === '/api/energy') {
       const bounds = String(url.searchParams.get('bounds') || '').split(',').map(Number);

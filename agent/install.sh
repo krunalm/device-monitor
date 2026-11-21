@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Device Monitor installer (Linux and macOS).
+# Device Monitor installer (Linux, macOS and Android in Termux).
 # Use the one-time HTTPS enrollment command from the dashboard.
 set -e
 HUB='__HUB__'; TOKEN='__TOKEN__'; DEVICE_ID='__DEVICE_ID__'
 [[ $HUB == https://* ]] || { echo 'HTTPS enrollment is required' >&2; exit 1; }
-SHA_AGENT='__SHA_AGENT__'; SHA_AGENT_MAC='__SHA_AGENT_MAC__'
+SHA_AGENT='__SHA_AGENT__'; SHA_AGENT_MAC='__SHA_AGENT_MAC__'; SHA_AGENT_ANDROID='__SHA_AGENT_ANDROID__'
 
 # Downloads a file and checks it against the SHA-256 the hub pinned when it issued this
 # installer — a tampered or spoofed agent script never runs.
@@ -42,6 +42,41 @@ if [ "$(uname -s)" = "Darwin" ]; then
 PLIST
   launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST"
   echo "Device Monitor agent for $(scutil --get ComputerName 2>/dev/null || hostname) -> $HUB (LaunchAgent com.devicemonitor.agent)."
+  echo "Uninstall: curl --proto '=https' -fsS $HUB/uninstall.sh | bash"
+  exit 0
+fi
+
+if [ -n "$TERMUX_VERSION" ] || [ "$(uname -o 2>/dev/null)" = "Android" ]; then
+  # Android (Termux, no root): a small background collector that lives as long as Termux does.
+  # The Termux:Boot app, if installed, starts it again after a reboot.
+  DIR="$HOME/.local/share/device-monitor"
+  mkdir -p "$DIR" "$HOME/.termux/boot"
+  OLD="$(cat "$DIR/agent.pid" 2>/dev/null || true)"
+  case "$OLD" in ''|*[!0-9]*) ;; *) if grep -q agent-android.sh "/proc/$OLD/cmdline" 2>/dev/null; then kill "$OLD" 2>/dev/null || true; fi ;; esac
+  rm -f "$DIR/agent.pid"
+  fetch_verified "$HUB/agent-android.sh" "$DIR/agent-android.sh" "$SHA_AGENT_ANDROID"; chmod +x "$DIR/agent-android.sh"
+  (umask 077; printf "HUB='%s'\nTOKEN='%s'\nDEVICE_ID='%s'\n" "$HUB" "$TOKEN" "$DEVICE_ID" > "$DIR/config"); chmod 600 "$DIR/config"   # contains this device's reporting credential
+  [ -f "$DIR/settings" ] || cat > "$DIR/settings" <<'SETTINGS'
+# Device Monitor settings for this device. Kept when you re-enroll.
+# After a change, restart the device, or run:  ~/.termux/boot/device-monitor &
+INTERVAL=5      # seconds between reports (2 to 20)
+KEEP_AWAKE=0    # 1 = hold a Termux wake lock, to keep reporting while the screen is off (uses more battery)
+SETTINGS
+  cat > "$HOME/.termux/boot/device-monitor" <<BOOT
+#!${PREFIX:-/data/data/com.termux/files/usr}/bin/sh
+# Starts (or restarts) the Device Monitor collector. Termux:Boot runs this after a reboot. It stays
+# in the foreground, so Termux keeps its background service (and with it the collector) alive.
+DIR="$DIR"
+OLD="\$(cat "\$DIR/agent.pid" 2>/dev/null)"
+case "\$OLD" in ''|*[!0-9]*) ;; *) grep -q agent-android.sh "/proc/\$OLD/cmdline" 2>/dev/null && kill "\$OLD" 2>/dev/null ;; esac
+rm -f "\$DIR/agent.pid"
+exec bash "\$DIR/agent-android.sh" >/dev/null 2>&1
+BOOT
+  chmod 700 "$HOME/.termux/boot/device-monitor"
+  nohup bash "$DIR/agent-android.sh" >/dev/null 2>&1 &
+  echo "Device Monitor agent for $(getprop ro.product.model 2>/dev/null || echo this device) -> $HUB."
+  echo "Leave Termux running in the background (press Home; don't swipe it away or type exit)."
+  echo "To start again after a reboot, install the Termux:Boot app and open it once."
   echo "Uninstall: curl --proto '=https' -fsS $HUB/uninstall.sh | bash"
   exit 0
 fi
