@@ -186,11 +186,11 @@ function firewallStatus() {
 // --hidden is reserved for relaunching in the background after an update.
 const LOGIN_ARGS = ['--startup'];
 function setStartup(enabled) {
-  if (!app.isPackaged) return; // dev runs would register electron.exe
+  if (!app.isPackaged || (!IS_WIN && !IS_MAC)) return;
   app.setLoginItemSettings({ openAtLogin: enabled, args: LOGIN_ARGS });
 }
 function startupEnabled() {
-  if (!app.isPackaged) return false;
+  if (!app.isPackaged || (!IS_WIN && !IS_MAC)) return false;
   const s = app.getLoginItemSettings({ args: LOGIN_ARGS });
   // executableWillLaunchAtLogin is Windows-only (false if disabled in Task Manager); Electron reports it false on macOS.
   return s.openAtLogin && (!IS_WIN || s.executableWillLaunchAtLogin !== false);
@@ -297,7 +297,7 @@ function buildTrayMenu() {
   if (updater?.status.state === 'ready') items.push({ label: `Restart to update to ${updater.status.version}`, click: () => updater.maybeInstall(true) }, { type: 'separator' });
   else if (updater?.status.state === 'ready-download' && updater.readyFile) items.push({ label: `Open verified update ${updater.status.version}`, click: openVerifiedUpdate }, { type: 'separator' });
 
-  items.push({ label: IS_MAC ? 'Open at login' : 'Start with Windows', type: 'checkbox', checked: startupEnabled(), enabled: app.isPackaged, click: m => setStartup(m.checked) });
+  if (IS_WIN || IS_MAC) items.push({ label: IS_MAC ? 'Open at login' : 'Start with Windows', type: 'checkbox', checked: startupEnabled(), enabled: app.isPackaged, click: m => setStartup(m.checked) });
   items.push({ label: 'Quit', click: () => { quitting = true; app.quit(); } });
   tray.setContextMenu(Menu.buildFromTemplate(items));
   tray.setToolTip(settings.mode === 'host' ? 'Device Monitor — hosting' : settings.mode === 'client' ? 'Device Monitor — connected' : 'Device Monitor');
@@ -363,7 +363,7 @@ handle('dm:change-setup', async () => { if (await confirmNative('Disconnect this
 handle('dm:settings', () => ({
   mode: settings.mode, hubUrl: settings.hubUrl, shareUrl: settings.mode ? shareUrl() : null,
   version: app.getVersion(), platform: process.platform,
-  startup: startupEnabled(), canSetStartup: app.isPackaged,
+  startup: startupEnabled(), canSetStartup: app.isPackaged && (IS_WIN || IS_MAC),
   startMinimized: settings.startMinimized === true, canStartMinimized: app.isPackaged && IS_WIN,
   canAllowFirewall: process.platform === 'win32' && settings.mode === 'host' && !!inboundPort,
   update: updater ? updater.status : { state: 'unavailable' },
